@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
 use std::path::Path;
+use core::str::FromStr;
+use serde_json;
 
 use bdk::wallet::{Wallet, AddressIndex};
 use bdk::database::{MemoryDatabase};
@@ -10,6 +12,7 @@ use bdk::Error;
 use bdk::bitcoin::Network;
 use bdk::bitcoin::consensus::encode::serialize_hex;
 use bdk::bitcoin;
+use bdk::bitcoin::OutPoint;
 use bdk::bitcoin::secp256k1::{Secp256k1};
 use bdk::keys::bip39::Mnemonic;
 use bdk::keys::{DerivableKey, ExtendedKey};
@@ -26,11 +29,11 @@ struct OutPut {
     tx_out: bitcoin::blockdata::transaction::TxOut,
 }
 
-#[derive(Debug, Copy, Clone)]
-struct OutPoint {
-    txid: bitcoin::hash_types::Txid,
-    vout: u32,
-}
+// #[derive(Debug, Copy, Clone)]
+// struct OutPoint {
+//     txid: bitcoin::hash_types::Txid,
+//     vout: u32,
+// }
 
 #[derive(Debug)]
 struct CoinJoinInput {
@@ -87,50 +90,74 @@ fn main() {
         }
     }
 
+
+    // pubkey wallets の変わりにファイルから読み込んだ json から local uxto を生成すればいい気がする
+    const JSON_DIR: &str = "./data/client/utxos";
+    let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
+    for file_name in Path::new(JSON_DIR).read_dir().expect("read_dir call failed") {
+        if let Ok(file_name) = file_name {
+            let file_path = file_name.path();
+            match fs::read_to_string(&file_path) {
+                Ok(string) => {
+                    println!("Read from {:?}", file_path);
+                    let utxo: bdk::LocalUtxo = serde_json::from_str(&string).unwrap();
+                    utxos.push(utxo)
+                },
+                Err(e) => {
+                    eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
     // サーバーはPSBT input を作成するために、クライアントから受け取る pubkey から wallet を生成する
-    // let mut clients:Vec<String> = Vec::new();
     let mut pubkey_clients:Vec<String> = Vec::new();
     for mnemonic in mnemonics.iter() {
-        // let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
-        // let xprv = xkey.into_xprv(network).unwrap();
-        // clients.push(xprv.to_string());
-
-        // pubkey をクライアントからもらったものをつかう
+        // TODO: pubkey をクライアントからもらったものをつかう
         let xkey_for_pubkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
         let xpub = xkey_for_pubkey.into_xpub(network, &Secp256k1::new());
         pubkey_clients.push(xpub.to_string());
     }
-    // let wallets = init_client_wallet(network, &host, &clients);
     let pubkey_wallets = init_client_pubkey_wallet(network, &host, &pubkey_clients);
 
-    // for wallet in wallets.iter() {
-    //     wallet.sync(noop_progress(), None).unwrap();
-    //     // println!("{:?} has {:?}",wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
-    //     // println!("{:?}",wallet.list_unspent().unwrap());
+    // let outpoints = list_outpoints(&pubkey_wallets);
+    // let mut outpoints = Vec::new();
+    // for utxo in &utxos {
+    //     // outpoints.push(bdk::bitcoin::OutPoint::from_str(utxo.outpoint));
+    //     outpoints.push(utxo.outpoint);
     // }
-
-    for wallet in pubkey_wallets.iter() {
-        wallet.sync(noop_progress(), None).unwrap();
-        // println!("{:?}",wallet.get_address(AddressIndex::Peek(0)).unwrap());
-
-        // このなかからクライアントからもらった Outpoint にマッチするものを見つける
-        println!("{:?}",wallet.list_unspent().unwrap());
+    // let outputs = list_outputs(outpoints, &pubkey_wallets);
+    let mut outputs = Vec::new();
+    for utxo in utxos.clone().into_iter() {
+        outputs.push(OutPut {
+            out_point: utxo.outpoint,
+            tx_out: utxo.txout,
+        });
     }
 
-    let outpoints = list_outpoints(&pubkey_wallets);
-    let outputs = list_outputs(outpoints, &pubkey_wallets);
-
     let mut psbt_inputs: Vec<bitcoin::util::psbt::Input> = Vec::new();
+
     for wallet in pubkey_wallets.iter() {
         // get_psbt_input はクライアントが行うことで、実際にはこのような値をサーバーは受け取ることになる
         // クライアントからは pubkey をもらい、サーバーで descriptor -> wallet を生成して psbt input を生成できる
-        psbt_inputs.push(wallet.get_psbt_input(wallet.list_unspent().unwrap()[0].clone(), None, false).unwrap())
+        for i in 0..5 {
+            match wallet.get_psbt_input(utxos[i].clone(), None, false) {
+                Ok(input) => {
+                    println!("Ok {:?}", input);
+                    psbt_inputs.push(input);
+                },
+                Err(err) => {println!("Erro {:?}", err)},
+            }
+        }
+        // psbt_inputs.push(wallet.get_psbt_input(wallet.list_unspent().unwrap()[0].clone(), None, false).unwrap())
+        // psbt_inputs.push(wallet.get_psbt_input(utxos[0].clone(), None, false))
     }
 
     let input_pairs = outputs.iter().zip(psbt_inputs.iter());
     let coinjoins: Vec<CoinJoinInput> = input_pairs.map(|(output, input)| CoinJoinInput{prev_output: output.clone(), input: input.clone()}).collect();
 
-    // Responsible for tumbler
+    // // Responsible for tumbler
     let (psbt, _) = {
         let mut builder = mixer.build_tx();
         builder
@@ -254,6 +281,9 @@ fn generate_wallet(descriptor: &str, change_descriptor: &str, network: bitcoin::
 mod tests {
     use super::*;
 
+    use std::fs::File;
+    use std::io::prelude::*;
+
     #[test]
     fn test_add() {
         let mut mnemonics:Vec<Mnemonic> = Vec::new();
@@ -282,10 +312,22 @@ mod tests {
         }
         let wallets = init_client_wallet(Network::Regtest, "127.0.0.1:50001", &clients);
 
-        for wallet in wallets.iter() {
+        for (i, wallet) in wallets.iter().enumerate() {
             wallet.sync(noop_progress(), None).unwrap();
-            println!("{:?} has {:?}",wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
-            println!("{:?}",wallet.list_unspent().unwrap());
+            println!("wallet {:?} has {:?}", wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
+            // まず決め打ちで取得
+            let local_utxo = &wallet.list_unspent().unwrap()[0];
+            // Outpoint は含まれている
+            let json = serde_json::to_vec(&local_utxo).unwrap(); // use to_vec instead of to_string
+
+            // pubkey が必要
+            // いや local utxo json にして dump してそれ読み取れば一旦いいのでは？
+
+            let mut file = File::create(format!("./data/client/utxos/{}.json", i)).unwrap();
+            file.write_all(&json).unwrap();
         }
+
+        // Outpoint と pubkey を dump する。実際にはサーバーに post する
+
     }
 }
