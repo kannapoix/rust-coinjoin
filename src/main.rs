@@ -10,6 +10,7 @@ use bdk::Error;
 use bdk::bitcoin::Network;
 use bdk::bitcoin::consensus::encode::serialize_hex;
 use bdk::bitcoin;
+use bdk::bitcoin::secp256k1::{Secp256k1};
 use bdk::keys::bip39::Mnemonic;
 use bdk::keys::{DerivableKey, ExtendedKey};
 
@@ -49,8 +50,26 @@ fn main() {
     };
     let host = env::var(ENV_HOST).unwrap();
 
+    // Initialize mixer wallet
+    let mixer_vec  = match fs::read_to_string(Path::new(MIXER_MNEMONIC_PATH))  {
+        Ok(string) => {
+            let mnemonic = Mnemonic::parse(&string).unwrap();
+            let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
+            let xprv = xkey.into_xprv(network).unwrap();
+            init_client_wallet(network, &host, &vec![xprv.to_string()])
+        },
+        Err(e) => {
+            eprintln!("Faild to read file {}: {}", MIXER_MNEMONIC_PATH, e);
+            std::process::exit(1);
+        }
+    };
+    let mixer = &mixer_vec[0];
+    mixer.sync(noop_progress(), None).unwrap();
+    println!("Mixer {:?} has {:?}", mixer.get_address(AddressIndex::Peek(0)).unwrap(), mixer.get_balance().unwrap());
+    
+    // Client side work
+    // May be it is good to write as test
     let mut mnemonics:Vec<Mnemonic> = Vec::new();
-
     for file_name in Path::new(MNEMONIC_DIR).read_dir().expect("read_dir call failed") {
         if let Ok(file_name) = file_name {
             let file_path = file_name.path();
@@ -68,44 +87,46 @@ fn main() {
         }
     }
 
-    let mixer_vec  = match fs::read_to_string(Path::new(MIXER_MNEMONIC_PATH))  {
-        Ok(string) => {
-            let mnemonic = Mnemonic::parse(&string).unwrap();
-            let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
-            let xprv = xkey.into_xprv(network).unwrap();
-            init_client_wallet(network, &host, vec![xprv.to_string()])
-        },
-        Err(e) => {
-            eprintln!("Faild to read file {}: {}", MIXER_MNEMONIC_PATH, e);
-            std::process::exit(1);
-        }
-    };
-    let mixer = &mixer_vec[0];
-    mixer.sync(noop_progress(), None).unwrap();
-    println!("Mixer {:?} has {:?}", mixer.get_address(AddressIndex::Peek(0)).unwrap(), mixer.get_balance().unwrap());
-
-    let mut clients:Vec<String> = Vec::new();
+    // サーバーはPSBT input を作成するために、クライアントから受け取る pubkey から wallet を生成する
+    // let mut clients:Vec<String> = Vec::new();
+    let mut pubkey_clients:Vec<String> = Vec::new();
     for mnemonic in mnemonics.iter() {
-        let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
-        let xprv = xkey.into_xprv(network).unwrap();
-        clients.push(xprv.to_string());
-    }
-    let wallets = init_client_wallet(network, &host, clients);
+        // let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
+        // let xprv = xkey.into_xprv(network).unwrap();
+        // clients.push(xprv.to_string());
 
-    for wallet in wallets.iter() {
+        // pubkey をクライアントからもらったものをつかう
+        let xkey_for_pubkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
+        let xpub = xkey_for_pubkey.into_xpub(network, &Secp256k1::new());
+        pubkey_clients.push(xpub.to_string());
+    }
+    // let wallets = init_client_wallet(network, &host, &clients);
+    let pubkey_wallets = init_client_pubkey_wallet(network, &host, &pubkey_clients);
+
+    // for wallet in wallets.iter() {
+    //     wallet.sync(noop_progress(), None).unwrap();
+    //     // println!("{:?} has {:?}",wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
+    //     // println!("{:?}",wallet.list_unspent().unwrap());
+    // }
+
+    for wallet in pubkey_wallets.iter() {
         wallet.sync(noop_progress(), None).unwrap();
-        println!("{:?} has {:?}",wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
+        // println!("{:?}",wallet.get_address(AddressIndex::Peek(0)).unwrap());
+
+        // このなかからクライアントからもらった Outpoint にマッチするものを見つける
+        println!("{:?}",wallet.list_unspent().unwrap());
     }
 
-    let outpoints = list_outpoints(&wallets);
-    let outputs = list_outputs(outpoints, &wallets);
+    let outpoints = list_outpoints(&pubkey_wallets);
+    let outputs = list_outputs(outpoints, &pubkey_wallets);
 
     let mut psbt_inputs: Vec<bitcoin::util::psbt::Input> = Vec::new();
-
-    for wallet in wallets.iter() {
+    for wallet in pubkey_wallets.iter() {
+        // get_psbt_input はクライアントが行うことで、実際にはこのような値をサーバーは受け取ることになる
+        // クライアントからは pubkey をもらい、サーバーで descriptor -> wallet を生成して psbt input を生成できる
         psbt_inputs.push(wallet.get_psbt_input(wallet.list_unspent().unwrap()[0].clone(), None, false).unwrap())
     }
-    
+
     let input_pairs = outputs.iter().zip(psbt_inputs.iter());
     let coinjoins: Vec<CoinJoinInput> = input_pairs.map(|(output, input)| CoinJoinInput{prev_output: output.clone(), input: input.clone()}).collect();
 
@@ -121,18 +142,21 @@ fn main() {
         }
 
         for coinjoin in &coinjoins {
+            // bitcoin::blockdata::transaction::OutPoint を PSBT input にいれるものとおもわれる
             builder.add_foreign_utxo(into_rust_bitcoin_output(&coinjoin.prev_output.out_point), coinjoin.input.clone(), 32).unwrap();// check about weight
         }
         builder.finish().unwrap()
     };
-    let psbts = list_signed_txs(psbt, &wallets);
-    match merge_psbts(psbts).pop() {
-        Some(psbt) => {
-            println!("Finalized PSBT {:?}", &serialize_hex(&psbt));
-            println!("Finalized tx extracted from PSBT {:?}", &serialize_hex(&psbt.extract_tx()));
-        },
-        None => println!("{:?}", "Can not get first item.")
-    };
+
+    // 署名はクライアントが行う
+    // let psbts = list_signed_txs(psbt, &wallets);
+    // match merge_psbts(psbts).pop() {
+    //     Some(psbt) => {
+    //         println!("Finalized PSBT {:?}", &serialize_hex(&psbt));
+    //         println!("Finalized tx extracted from PSBT {:?}", &serialize_hex(&psbt.extract_tx()));
+    //     },
+    //     None => println!("{:?}", "Can not get first item.")
+    // };
 }
 
 fn merge_psbts(mut psbts: Vec<PSBT>) -> Vec<PSBT> {
@@ -180,9 +204,16 @@ fn list_outpoints(wallets: &Vec<InnerWallet>) -> Vec<OutPoint> {
     outpoints
 }
 
-fn init_client_wallet(network: bitcoin::Network, electrum_endpoint: &str, clients: Vec<String>) -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
+fn init_client_wallet(network: bitcoin::Network, electrum_endpoint: &str, clients: &Vec<String>) -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
     clients.iter().map( |client| {
         let descriptors = prepare_descriptor(client);
+        return generate_wallet(&descriptors[0], &descriptors[1], network, electrum_endpoint).unwrap();
+    }).collect()
+}
+
+fn init_client_pubkey_wallet(network: bitcoin::Network, electrum_endpoint: &str, clients: &Vec<String>) -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
+    clients.iter().map( |client| {
+        let descriptors = prepare_public_descriptor(client);
         return generate_wallet(&descriptors[0], &descriptors[1], network, electrum_endpoint).unwrap();
     }).collect()
 }
@@ -190,6 +221,14 @@ fn init_client_wallet(network: bitcoin::Network, electrum_endpoint: &str, client
 fn prepare_descriptor(base: &str) -> [String;2] {
     let descriptor = format!("wpkh({}/84'/1'/0'/0/*)", base);
     let change_descriptor = format!("wpkh({}/84'/1'/0'/1/*)", base);
+    return [descriptor, change_descriptor];
+}
+
+fn prepare_public_descriptor(base: &str) -> [String;2] {
+    let descriptor = format!("wpkh({})", "0375254c039ce50308b3a9a89f08843d7bfc2dbf058e62e26d47be92e5a392d7ed");
+    // Addr is not working
+    // let descriptor = format!("addr({})", "bcrt1qfxuuk7m6vmrnc6h6ta7fu8g56qn3qh6pg03nah");
+    let change_descriptor = format!("wpkh({})", base);
     return [descriptor, change_descriptor];
 }
 
@@ -207,4 +246,46 @@ fn generate_wallet(descriptor: &str, change_descriptor: &str, network: bitcoin::
         MemoryDatabase::default(),
         ElectrumBlockchain::from(client)
     )
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add() {
+        let mut mnemonics:Vec<Mnemonic> = Vec::new();
+        for file_name in Path::new(MNEMONIC_DIR).read_dir().expect("read_dir call failed") {
+            if let Ok(file_name) = file_name {
+                let file_path = file_name.path();
+                match fs::read_to_string(&file_path) {
+                    Ok(string) => {
+                        println!("Read from {:?}", file_path);
+                        let mnemonic = Mnemonic::parse(&string).unwrap();
+                        mnemonics.push(mnemonic)
+                    },
+                    Err(e) => {
+                        eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+
+        let mut clients:Vec<String> = Vec::new();
+        for mnemonic in mnemonics.iter() {
+            let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
+            let xprv = xkey.into_xprv(Network::Regtest).unwrap();
+            clients.push(xprv.to_string());
+        }
+        let wallets = init_client_wallet(Network::Regtest, "127.0.0.1:50001", &clients);
+
+        for wallet in wallets.iter() {
+            wallet.sync(noop_progress(), None).unwrap();
+            println!("{:?} has {:?}",wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
+            println!("{:?}",wallet.list_unspent().unwrap());
+        }
+    }
 }
