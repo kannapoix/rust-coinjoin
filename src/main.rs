@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::io::Write;
 use core::str::FromStr;
 use serde_json;
 
@@ -15,6 +16,7 @@ use bdk::bitcoin;
 use bdk::bitcoin::OutPoint;
 use bdk::bitcoin::secp256k1::{Secp256k1};
 use bdk::keys::bip39::Mnemonic;
+use bdk::bitcoin::util::bip32;
 use bdk::keys::{DerivableKey, ExtendedKey};
 
 type InnerWallet = Wallet<ElectrumBlockchain, MemoryDatabase>;
@@ -22,6 +24,7 @@ type PSBT = bdk::bitcoin::util::psbt::PartiallySignedTransaction;
 
 const MNEMONIC_DIR: &str = "./data/client/mnemonic";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
+const PSBT_PATH: &str = "./data/psbt.txt";
 
 #[derive(Debug, Clone)]
 struct OutPut {
@@ -91,7 +94,7 @@ fn main() {
     }
 
 
-    // pubkey wallets の変わりにファイルから読み込んだ json から local uxto を生成すればいい気がする
+    // Finally get utxo from client
     const JSON_DIR: &str = "./data/client/utxos";
     let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
     for file_name in Path::new(JSON_DIR).read_dir().expect("read_dir call failed") {
@@ -111,23 +114,20 @@ fn main() {
         }
     }
 
-    // サーバーはPSBT input を作成するために、クライアントから受け取る pubkey から wallet を生成する
+    // Finally get pubkey from client
     let mut pubkey_clients:Vec<String> = Vec::new();
     for mnemonic in mnemonics.iter() {
-        // TODO: pubkey をクライアントからもらったものをつかう
-        let xkey_for_pubkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
-        let xpub = xkey_for_pubkey.into_xpub(network, &Secp256k1::new());
-        pubkey_clients.push(xpub.to_string());
+        // これが動かない謎を知りたい
+        // let xpri: bip32::ExtendedPrivKey = mnemonic.clone().into_extended_key().unwrap().into_xprv(Network::Regtest).unwrap();
+        let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
+        let xprv = xkey.into_xprv(Network::Regtest).unwrap();
+        let derived_prv = xprv.derive_priv(&Secp256k1::new(), &bip32::DerivationPath::from_str("m/84'/1'/0'/0/0").unwrap()).unwrap();
+
+        let derivd_pub = bip32::ExtendedPubKey::from_private(&Secp256k1::new(), &derived_prv);
+        pubkey_clients.push(format!("{}", derivd_pub));
     }
     let pubkey_wallets = init_client_pubkey_wallet(network, &host, &pubkey_clients);
 
-    // let outpoints = list_outpoints(&pubkey_wallets);
-    // let mut outpoints = Vec::new();
-    // for utxo in &utxos {
-    //     // outpoints.push(bdk::bitcoin::OutPoint::from_str(utxo.outpoint));
-    //     outpoints.push(utxo.outpoint);
-    // }
-    // let outputs = list_outputs(outpoints, &pubkey_wallets);
     let mut outputs = Vec::new();
     for utxo in utxos.clone().into_iter() {
         outputs.push(OutPut {
@@ -137,27 +137,23 @@ fn main() {
     }
 
     let mut psbt_inputs: Vec<bitcoin::util::psbt::Input> = Vec::new();
-
     for wallet in pubkey_wallets.iter() {
-        // get_psbt_input はクライアントが行うことで、実際にはこのような値をサーバーは受け取ることになる
-        // クライアントからは pubkey をもらい、サーバーで descriptor -> wallet を生成して psbt input を生成できる
+        wallet.sync(noop_progress(), None);
         for i in 0..5 {
             match wallet.get_psbt_input(utxos[i].clone(), None, false) {
                 Ok(input) => {
-                    println!("Ok {:?}", input);
+                    println!("UTXO found: {:?}", input);
                     psbt_inputs.push(input);
                 },
-                Err(err) => {println!("Erro {:?}", err)},
+                Err(err) => {println!("Error: {:?}", err)},
             }
         }
-        // psbt_inputs.push(wallet.get_psbt_input(wallet.list_unspent().unwrap()[0].clone(), None, false).unwrap())
-        // psbt_inputs.push(wallet.get_psbt_input(utxos[0].clone(), None, false))
     }
 
     let input_pairs = outputs.iter().zip(psbt_inputs.iter());
     let coinjoins: Vec<CoinJoinInput> = input_pairs.map(|(output, input)| CoinJoinInput{prev_output: output.clone(), input: input.clone()}).collect();
 
-    // // Responsible for tumbler
+    // Responsible for tumbler
     let (psbt, _) = {
         let mut builder = mixer.build_tx();
         builder
@@ -169,21 +165,16 @@ fn main() {
         }
 
         for coinjoin in &coinjoins {
-            // bitcoin::blockdata::transaction::OutPoint を PSBT input にいれるものとおもわれる
             builder.add_foreign_utxo(into_rust_bitcoin_output(&coinjoin.prev_output.out_point), coinjoin.input.clone(), 32).unwrap();// check about weight
         }
         builder.finish().unwrap()
     };
 
-    // 署名はクライアントが行う
-    // let psbts = list_signed_txs(psbt, &wallets);
-    // match merge_psbts(psbts).pop() {
-    //     Some(psbt) => {
-    //         println!("Finalized PSBT {:?}", &serialize_hex(&psbt));
-    //         println!("Finalized tx extracted from PSBT {:?}", &serialize_hex(&psbt.extract_tx()));
-    //     },
-    //     None => println!("{:?}", "Can not get first item.")
-    // };
+    let hex_psbt = serialize_hex(&psbt);
+    println!("{:?}", psbt);
+    println!("{:?}", hex_psbt);
+    let mut file = std::fs::File::create(PSBT_PATH).unwrap();
+    file.write_all(hex_psbt.as_bytes()).unwrap();
 }
 
 fn merge_psbts(mut psbts: Vec<PSBT>) -> Vec<PSBT> {
@@ -252,9 +243,7 @@ fn prepare_descriptor(base: &str) -> [String;2] {
 }
 
 fn prepare_public_descriptor(base: &str) -> [String;2] {
-    let descriptor = format!("wpkh({})", "0375254c039ce50308b3a9a89f08843d7bfc2dbf058e62e26d47be92e5a392d7ed");
-    // Addr is not working
-    // let descriptor = format!("addr({})", "bcrt1qfxuuk7m6vmrnc6h6ta7fu8g56qn3qh6pg03nah");
+    let descriptor = format!("wpkh({})", base);
     let change_descriptor = format!("wpkh({})", base);
     return [descriptor, change_descriptor];
 }
@@ -265,7 +254,6 @@ fn into_rust_bitcoin_output(out_point: &OutPoint) -> bitcoin::blockdata::transac
 
 fn generate_wallet(descriptor: &str, change_descriptor: &str, network: bitcoin::Network, electrum_endpoint: &str) -> Result<InnerWallet, Error> {
     let client = Client::new(electrum_endpoint).unwrap();
-
     Wallet::new(
         descriptor,
         Some(change_descriptor),
@@ -282,10 +270,9 @@ mod tests {
     use super::*;
 
     use std::fs::File;
-    use std::io::prelude::*;
+    // use std::prelude::*;
 
-    #[test]
-    fn test_add() {
+    fn setup_client_wallets() -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
         let mut mnemonics:Vec<Mnemonic> = Vec::new();
         for file_name in Path::new(MNEMONIC_DIR).read_dir().expect("read_dir call failed") {
             if let Ok(file_name) = file_name {
@@ -310,7 +297,12 @@ mod tests {
             let xprv = xkey.into_xprv(Network::Regtest).unwrap();
             clients.push(xprv.to_string());
         }
-        let wallets = init_client_wallet(Network::Regtest, "127.0.0.1:50001", &clients);
+        init_client_wallet(Network::Regtest, "127.0.0.1:50001", &clients)
+    }
+
+    #[test]
+    fn dump_utxos() {
+        let wallets = setup_client_wallets();
 
         for (i, wallet) in wallets.iter().enumerate() {
             wallet.sync(noop_progress(), None).unwrap();
@@ -320,14 +312,25 @@ mod tests {
             // Outpoint は含まれている
             let json = serde_json::to_vec(&local_utxo).unwrap(); // use to_vec instead of to_string
 
-            // pubkey が必要
-            // いや local utxo json にして dump してそれ読み取れば一旦いいのでは？
-
             let mut file = File::create(format!("./data/client/utxos/{}.json", i)).unwrap();
             file.write_all(&json).unwrap();
         }
+    }
 
-        // Outpoint と pubkey を dump する。実際にはサーバーに post する
+    #[test]
+    fn sign_psbt() {
+        let wallets = setup_client_wallets();
 
+        let hex_psbt = fs::read_to_string(PSBT_PATH).unwrap();
+        let psbt = bdk::bitcoin::consensus::deserialize::<bdk::bitcoin::util::psbt::PartiallySignedTransaction>(&<Vec<u8> as bdk::bitcoin::hashes::hex::FromHex>::from_hex(&hex_psbt).unwrap()).unwrap();
+
+        let psbts = list_signed_txs(psbt, &wallets);
+        match merge_psbts(psbts).pop() {
+            Some(psbt) => {
+                println!("Finalized PSBT {:?}", &serialize_hex(&psbt));
+                println!("Finalized tx extracted from PSBT {:?}", &serialize_hex(&psbt.extract_tx()));
+            },
+            None => println!("{:?}", "Can not get first item.")
+        };
     }
 }
