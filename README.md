@@ -38,9 +38,21 @@ bitcoin-cli --regtest generatetodescriptor 1 "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQec
 ```
 
 # Run
-Use regtest server on your local.
+Prepare utxos as client.
+This will dump utxos to ./data/client/utxos 
+```
+cargo test dump_utxo -- --nocapture
+```
+
+Construct PSBT as server
+This will dump unsigned PSBT as ./data/psbt.txt
 ```
 HOST="127.0.0.1:50001" NETWORK="regtest" cargo run
 HOST="ssl://blockstream.info:993" NETWORK="testnet" cargo run
 HOST="ssl://electrum.blockstream.info:60002" NETWORK="testnet" cargo run
 ```
+
+Sign PSBT as client
+```
+cargo test sign_psbt -- --nocapture
+``
