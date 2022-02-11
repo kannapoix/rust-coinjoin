@@ -10,13 +10,13 @@ use bdk::database::{MemoryDatabase};
 use bdk::blockchain::{noop_progress, ElectrumBlockchain};
 use bdk::electrum_client::Client;
 use bdk::Error;
-use bdk::bitcoin::Network;
-use bdk::bitcoin::consensus::encode::serialize_hex;
 use bdk::bitcoin;
+use bdk::bitcoin::util::{bip32};
+use bdk::bitcoin::Network;
 use bdk::bitcoin::OutPoint;
+use bdk::bitcoin::consensus::encode::serialize_hex;
 use bdk::bitcoin::secp256k1::{Secp256k1};
 use bdk::keys::bip39::Mnemonic;
-use bdk::bitcoin::util::bip32;
 use bdk::keys::{DerivableKey, ExtendedKey};
 
 type InnerWallet = Wallet<ElectrumBlockchain, MemoryDatabase>;
@@ -26,21 +26,9 @@ const MNEMONIC_DIR: &str = "./data/client/mnemonic";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
 const PSBT_PATH: &str = "./data/psbt.txt";
 
-#[derive(Debug, Clone)]
-struct OutPut {
-    out_point: OutPoint,
-    tx_out: bitcoin::blockdata::transaction::TxOut,
-}
-
-// #[derive(Debug, Copy, Clone)]
-// struct OutPoint {
-//     txid: bitcoin::hash_types::Txid,
-//     vout: u32,
-// }
-
 #[derive(Debug)]
-struct CoinJoinInput {
-    prev_output: OutPut,
+struct OutputSet {
+    outpoint: OutPoint,
     input: bitcoin::util::psbt::Input,
 }
 
@@ -93,8 +81,19 @@ fn main() {
         }
     }
 
+    // TODO: Finally get pubkey from client
+    let mut pubkey_clients:Vec<String> = Vec::new();
+    for mnemonic in mnemonics.iter() {
+        let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
+        let xprv = xkey.into_xprv(Network::Regtest).unwrap();
+        let derived_prv = xprv.derive_priv(&Secp256k1::new(), &bip32::DerivationPath::from_str("m/84'/1'/0'/0/0").unwrap()).unwrap();
 
-    // Finally get utxo from client
+        let derivd_pub = bip32::ExtendedPubKey::from_private(&Secp256k1::new(), &derived_prv);
+        pubkey_clients.push(format!("{}", derivd_pub));
+    }
+    let pubkey_wallets = init_client_pubkey_wallet(network, &host, &pubkey_clients);
+
+    // TODO: Finally get utxo from client
     const JSON_DIR: &str = "./data/client/utxos";
     let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
     for file_name in Path::new(JSON_DIR).read_dir().expect("read_dir call failed") {
@@ -114,46 +113,24 @@ fn main() {
         }
     }
 
-    // Finally get pubkey from client
-    let mut pubkey_clients:Vec<String> = Vec::new();
-    for mnemonic in mnemonics.iter() {
-        // これが動かない謎を知りたい
-        // let xpri: bip32::ExtendedPrivKey = mnemonic.clone().into_extended_key().unwrap().into_xprv(Network::Regtest).unwrap();
-        let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
-        let xprv = xkey.into_xprv(Network::Regtest).unwrap();
-        let derived_prv = xprv.derive_priv(&Secp256k1::new(), &bip32::DerivationPath::from_str("m/84'/1'/0'/0/0").unwrap()).unwrap();
-
-        let derivd_pub = bip32::ExtendedPubKey::from_private(&Secp256k1::new(), &derived_prv);
-        pubkey_clients.push(format!("{}", derivd_pub));
-    }
-    let pubkey_wallets = init_client_pubkey_wallet(network, &host, &pubkey_clients);
-
-    let mut outputs = Vec::new();
-    for utxo in utxos.clone().into_iter() {
-        outputs.push(OutPut {
-            out_point: utxo.outpoint,
-            tx_out: utxo.txout,
-        });
-    }
-
-    let mut psbt_inputs: Vec<bitcoin::util::psbt::Input> = Vec::new();
+    let mut psbt_inputs: Vec<OutputSet> = Vec::new();
     for wallet in pubkey_wallets.iter() {
-        wallet.sync(noop_progress(), None);
+        wallet.sync(noop_progress(), None).unwrap();
         for i in 0..5 {
-            match wallet.get_psbt_input(utxos[i].clone(), None, false) {
+            let utxo = utxos[i].clone();
+            match wallet.get_psbt_input(utxo.clone(), None, false) {
                 Ok(input) => {
-                    println!("UTXO found: {:?}", input);
-                    psbt_inputs.push(input);
+                    println!("UTXO found: {:?}", &input);
+                    psbt_inputs.push(OutputSet { outpoint: utxo.outpoint, input: input });
                 },
-                Err(err) => {println!("Error: {:?}", err)},
+                Err(err) => {
+                    println!("Error: {:?}", err)
+                },
             }
         }
     }
 
-    let input_pairs = outputs.iter().zip(psbt_inputs.iter());
-    let coinjoins: Vec<CoinJoinInput> = input_pairs.map(|(output, input)| CoinJoinInput{prev_output: output.clone(), input: input.clone()}).collect();
-
-    // Responsible for tumbler
+    // Build CoinJoin PSBT tx
     let (psbt, _) = {
         let mut builder = mixer.build_tx();
         builder
@@ -164,15 +141,13 @@ fn main() {
             builder.add_recipient(mixer.get_address(AddressIndex::New).unwrap().script_pubkey(), 5_000);
         }
 
-        for coinjoin in &coinjoins {
-            builder.add_foreign_utxo(into_rust_bitcoin_output(&coinjoin.prev_output.out_point), coinjoin.input.clone(), 32).unwrap();// check about weight
+        for psbt_input in &psbt_inputs {
+            builder.add_foreign_utxo(into_rust_bitcoin_output(&psbt_input.outpoint), psbt_input.input.clone(), 32).unwrap();// check about weight
         }
         builder.finish().unwrap()
     };
 
     let hex_psbt = serialize_hex(&psbt);
-    println!("{:?}", psbt);
-    println!("{:?}", hex_psbt);
     let mut file = std::fs::File::create(PSBT_PATH).unwrap();
     file.write_all(hex_psbt.as_bytes()).unwrap();
 }
@@ -191,36 +166,21 @@ fn merge_psbts(mut psbts: Vec<PSBT>) -> Vec<PSBT> {
 fn list_signed_txs(mut psbt: PSBT, wallets: &Vec<InnerWallet>) -> Vec<PSBT> {
     let mut psbts = Vec::new();
     for wallet in wallets.iter() {
-        let _ = wallet.sign(&mut psbt, bdk::SignOptions::default()).unwrap();
-        psbts.push(psbt.clone())
+        wallet.sync(noop_progress(), None);
+        let mut psbt_for_each_wallet = psbt.clone();
+        match wallet.sign(&mut psbt_for_each_wallet, bdk::SignOptions::default()) {
+            Ok(result) => {
+                println!("Sign status is {}", result);
+            },
+            Err(error) => {
+                println!("My Error {:?}", error)
+            }
+        }
+        psbts.push(psbt_for_each_wallet.clone())
     };
     psbts
 }
 
-fn list_outputs(outpoints: Vec<OutPoint>, wallets: &Vec<InnerWallet>) -> Vec<OutPut> {
-    let mut outputs = Vec::new();
-    for (index, outpoint) in outpoints.into_iter().enumerate() {
-        outputs.push(OutPut {
-            out_point: outpoint,
-            tx_out: wallets[index].list_unspent().unwrap()[0].txout.clone(),
-        });
-    }
-    outputs
-}
-
-fn list_outpoints(wallets: &Vec<InnerWallet>) -> Vec<OutPoint> {
-    // TODO: get OutPoint from client
-    // txID and vout are necessary
-    let mut outpoints = Vec::new();
-    for wallet in wallets.iter() {
-        let utxo = wallet.list_unspent().unwrap();
-        outpoints.push(OutPoint {
-            txid: utxo[0].outpoint.txid,
-            vout: utxo[0].outpoint.vout,
-        });
-    }
-    outpoints
-}
 
 fn init_client_wallet(network: bitcoin::Network, electrum_endpoint: &str, clients: &Vec<String>) -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
     clients.iter().map( |client| {
@@ -270,7 +230,6 @@ mod tests {
     use super::*;
 
     use std::fs::File;
-    // use std::prelude::*;
 
     fn setup_client_wallets() -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
         let mut mnemonics:Vec<Mnemonic> = Vec::new();
@@ -301,16 +260,17 @@ mod tests {
     }
 
     #[test]
+    // dump_utxos dumps utxo data of each client wallet into local file. JSON schema is following.
+    // e.g. {"outpoint":"b78fb014ff8d7bbee82a393a371f852380e6007e838b1c62dc5d9c12491d08a4:1","txout":{"value":2000000000,"script_pubkey":"00143c45afd830fe843a91136a9f7df3064c2e0778b9"},"keychain":"External"}
     fn dump_utxos() {
         let wallets = setup_client_wallets();
 
         for (i, wallet) in wallets.iter().enumerate() {
             wallet.sync(noop_progress(), None).unwrap();
             println!("wallet {:?} has {:?}", wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
-            // まず決め打ちで取得
+            // TODO: select utxo to be used as Input
             let local_utxo = &wallet.list_unspent().unwrap()[0];
-            // Outpoint は含まれている
-            let json = serde_json::to_vec(&local_utxo).unwrap(); // use to_vec instead of to_string
+            let json = serde_json::to_vec(&local_utxo).unwrap();
 
             let mut file = File::create(format!("./data/client/utxos/{}.json", i)).unwrap();
             file.write_all(&json).unwrap();
@@ -330,7 +290,7 @@ mod tests {
                 println!("Finalized PSBT {:?}", &serialize_hex(&psbt));
                 println!("Finalized tx extracted from PSBT {:?}", &serialize_hex(&psbt.extract_tx()));
             },
-            None => println!("{:?}", "Can not get first item.")
+            None => println!("Can not get first item.")
         };
     }
 }
