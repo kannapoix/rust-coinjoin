@@ -10,13 +10,13 @@ use bdk::database::{MemoryDatabase};
 use bdk::blockchain::{noop_progress, ElectrumBlockchain};
 use bdk::electrum_client::Client;
 use bdk::Error;
-use bdk::bitcoin::Network;
-use bdk::bitcoin::consensus::encode::serialize_hex;
 use bdk::bitcoin;
+use bdk::bitcoin::util::{bip32};
+use bdk::bitcoin::Network;
 use bdk::bitcoin::OutPoint;
+use bdk::bitcoin::consensus::encode::serialize_hex;
 use bdk::bitcoin::secp256k1::{Secp256k1};
 use bdk::keys::bip39::Mnemonic;
-use bdk::bitcoin::util::bip32;
 use bdk::keys::{DerivableKey, ExtendedKey};
 
 type InnerWallet = Wallet<ElectrumBlockchain, MemoryDatabase>;
@@ -25,12 +25,6 @@ type PSBT = bdk::bitcoin::util::psbt::PartiallySignedTransaction;
 const MNEMONIC_DIR: &str = "./data/client/mnemonic";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
 const PSBT_PATH: &str = "./data/psbt.txt";
-
-#[derive(Debug, Clone)]
-struct OutPut {
-    out_point: OutPoint,
-    tx_out: bitcoin::blockdata::transaction::TxOut,
-}
 
 #[derive(Debug)]
 struct OutputSet {
@@ -87,11 +81,9 @@ fn main() {
         }
     }
 
-    // Finally get pubkey from client
+    // TODO: Finally get pubkey from client
     let mut pubkey_clients:Vec<String> = Vec::new();
     for mnemonic in mnemonics.iter() {
-        // これが動かない謎を知りたい
-        // let xpri: bip32::ExtendedPrivKey = mnemonic.clone().into_extended_key().unwrap().into_xprv(Network::Regtest).unwrap();
         let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
         let xprv = xkey.into_xprv(Network::Regtest).unwrap();
         let derived_prv = xprv.derive_priv(&Secp256k1::new(), &bip32::DerivationPath::from_str("m/84'/1'/0'/0/0").unwrap()).unwrap();
@@ -101,7 +93,7 @@ fn main() {
     }
     let pubkey_wallets = init_client_pubkey_wallet(network, &host, &pubkey_clients);
 
-    // Finally get utxo from client
+    // TODO: Finally get utxo from client
     const JSON_DIR: &str = "./data/client/utxos";
     let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
     for file_name in Path::new(JSON_DIR).read_dir().expect("read_dir call failed") {
@@ -123,7 +115,7 @@ fn main() {
 
     let mut psbt_inputs: Vec<OutputSet> = Vec::new();
     for wallet in pubkey_wallets.iter() {
-        wallet.sync(noop_progress(), None);
+        wallet.sync(noop_progress(), None).unwrap();
         for i in 0..5 {
             let utxo = utxos[i].clone();
             match wallet.get_psbt_input(utxo.clone(), None, false) {
@@ -132,13 +124,13 @@ fn main() {
                     psbt_inputs.push(OutputSet { outpoint: utxo.outpoint, input: input });
                 },
                 Err(err) => {
-                    // println!("Error: {:?}", err)
+                    println!("Error: {:?}", err)
                 },
             }
         }
     }
 
-    // Responsible for tumbler
+    // Build CoinJoin PSBT tx
     let (psbt, _) = {
         let mut builder = mixer.build_tx();
         builder
@@ -189,30 +181,6 @@ fn list_signed_txs(mut psbt: PSBT, wallets: &Vec<InnerWallet>) -> Vec<PSBT> {
     psbts
 }
 
-fn list_outputs(outpoints: Vec<OutPoint>, wallets: &Vec<InnerWallet>) -> Vec<OutPut> {
-    let mut outputs = Vec::new();
-    for (index, outpoint) in outpoints.into_iter().enumerate() {
-        outputs.push(OutPut {
-            out_point: outpoint,
-            tx_out: wallets[index].list_unspent().unwrap()[0].txout.clone(),
-        });
-    }
-    outputs
-}
-
-fn list_outpoints(wallets: &Vec<InnerWallet>) -> Vec<OutPoint> {
-    // TODO: get OutPoint from client
-    // txID and vout are necessary
-    let mut outpoints = Vec::new();
-    for wallet in wallets.iter() {
-        let utxo = wallet.list_unspent().unwrap();
-        outpoints.push(OutPoint {
-            txid: utxo[0].outpoint.txid,
-            vout: utxo[0].outpoint.vout,
-        });
-    }
-    outpoints
-}
 
 fn init_client_wallet(network: bitcoin::Network, electrum_endpoint: &str, clients: &Vec<String>) -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
     clients.iter().map( |client| {
@@ -292,16 +260,17 @@ mod tests {
     }
 
     #[test]
+    // dump_utxos dumps utxo data of each client wallet into local file. JSON schema is following.
+    // e.g. {"outpoint":"b78fb014ff8d7bbee82a393a371f852380e6007e838b1c62dc5d9c12491d08a4:1","txout":{"value":2000000000,"script_pubkey":"00143c45afd830fe843a91136a9f7df3064c2e0778b9"},"keychain":"External"}
     fn dump_utxos() {
         let wallets = setup_client_wallets();
 
         for (i, wallet) in wallets.iter().enumerate() {
             wallet.sync(noop_progress(), None).unwrap();
             println!("wallet {:?} has {:?}", wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
-            // まず決め打ちで取得
+            // TODO: select utxo to be used as Input
             let local_utxo = &wallet.list_unspent().unwrap()[0];
-            // Outpoint は含まれている
-            let json = serde_json::to_vec(&local_utxo).unwrap(); // use to_vec instead of to_string
+            let json = serde_json::to_vec(&local_utxo).unwrap();
 
             let mut file = File::create(format!("./data/client/utxos/{}.json", i)).unwrap();
             file.write_all(&json).unwrap();
