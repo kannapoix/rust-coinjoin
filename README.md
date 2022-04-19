@@ -6,7 +6,7 @@ Lastly, each Alice and Bob sign the trasaction by their own prive key.
 
 # Initial setup
 
-```
+```rust
 // Start regtest bitcoind and electrs
 // To stop bitcoind, run "make stop-bitcoind"
 make run-servers
@@ -29,18 +29,35 @@ bitcoin-cli --regtest sendtoaddress bcrt1q7hv0uc8pun3u9vex4lxvf9tev8qxdn68pw6r30
 ```
 
 If electrs is waiting for IBD, you need to mine a block.  
-```
+```shell
 $ [electrs::daemon] waiting for 0 blocks to download (IBD)
 ```
 
-```
+```shell
 bitcoin-cli --regtest generatetodescriptor 1 "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/0)"
 ```
 
 # Run
-Use regtest server on your local.
+## Prepare utxos as client
+
+This will dump utxos to ./data/client/utxos 
+```shell
+cargo test dump_utxo -- --nocapture
 ```
+
+## Construct PSBT as server
+This will dump unsigned PSBT as ./data/psbt.txt
+```shell
 HOST="127.0.0.1:50001" NETWORK="regtest" cargo run
+```
+
+For test net
+```shell
 HOST="ssl://blockstream.info:993" NETWORK="testnet" cargo run
 HOST="ssl://electrum.blockstream.info:60002" NETWORK="testnet" cargo run
 ```
+
+## Sign PSBT as client
+```shell
+cargo test sign_psbt -- --nocapture
+``
