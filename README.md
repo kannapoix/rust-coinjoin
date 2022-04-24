@@ -18,7 +18,7 @@ bitcoin-cli --regtest importdescriptors '[{ "desc": "wpkh(tprv8ZgxMBicQKsPcwmRJo
 // To get checksum of descriptor
 bitcoin-cli --regtest getdescriptorinfo "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/*)"
 
-bitcoin-cli --regtest generatetodescriptor 110 "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/0)"
+bitcoin-cli --regtest generatetodescriptor 120 "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/0)"
 
 // Send to the others wallets from Alice
 bitcoin-cli --regtest sendtoaddress bcrt1qwj7d4n048pj7xerwfnl2qmmnlk9ggjs7v0fqs7 20
@@ -38,11 +38,16 @@ bitcoin-cli --regtest generatetodescriptor 1 "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQec
 ```
 
 # Run
-## Prepare utxos as client
+## Prepare utxos and psbt input as client
 
-This will dump utxos to ./data/client/utxos 
+This will dump utxos to ./data/client/utxos
 ```shell
 cargo test dump_utxo -- --nocapture
+```
+
+This will dump hex psbt input to ./data/client/psbt_inputs
+```shell
+cargo test dump_psbt_input -- --nocapture
 ```
 
 ## Construct PSBT as server
@@ -60,4 +65,4 @@ HOST="ssl://electrum.blockstream.info:60002" NETWORK="testnet" cargo run
 ## Sign PSBT as client
 ```shell
 cargo test sign_psbt -- --nocapture
-``
+```
