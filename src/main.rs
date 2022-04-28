@@ -7,6 +7,9 @@ use core::str::FromStr;
 use serde::Deserialize;
 use serde_json;
 use serde_json::Number;
+use std::fs::File;
+
+use actix_web::{get, web, App, HttpResponse, HttpServer};
 
 use bdk::wallet::{Wallet, AddressIndex};
 use bdk::database::{MemoryDatabase};
@@ -26,8 +29,12 @@ use bdk::keys::{DerivableKey, ExtendedKey};
 type InnerWallet = Wallet<ElectrumBlockchain, MemoryDatabase>;
 type PSBT = bdk::bitcoin::util::psbt::PartiallySignedTransaction;
 
+const ENV_HOST: &str = "HOST";
+const ENV_NETWORK: &str = "NETWORK";
+
 const MNEMONIC_DIR: &str = "./data/client/mnemonic";
 const PSBT_INPUT_DIR: &str = "./data/client/psbt_inputs";
+const UTXO_DIR: &str = "./data/client/utxos";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
 const PSBT_PATH: &str = "./data/psbt.txt";
 
@@ -51,10 +58,106 @@ struct Txout {
     script_pubkey: String
 }
 
-fn main() {
-    const ENV_HOST: &str = "HOST";
-    const ENV_NETWORK: &str = "NETWORK";
+fn setup_client_wallets() -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
+    let mut mnemonics:Vec<Mnemonic> = Vec::new();
+    for file_name in Path::new(MNEMONIC_DIR).read_dir().expect("read_dir call failed") {
+        if let Ok(file_name) = file_name {
+            let file_path = file_name.path();
+            match fs::read_to_string(&file_path) {
+                Ok(string) => {
+                    println!("Read from {:?}", file_path);
+                    let mnemonic = Mnemonic::parse(&string).unwrap();
+                    mnemonics.push(mnemonic)
+                },
+                Err(e) => {
+                    eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
 
+    let mut clients:Vec<String> = Vec::new();
+    for mnemonic in mnemonics.iter() {
+        let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
+        let xprv = xkey.into_xprv(Network::Regtest).unwrap();
+        clients.push(xprv.to_string());
+    }
+    init_client_wallet(Network::Regtest, "127.0.0.1:50001", &clients)
+}
+
+// dump_utxos dumps utxo data of each client wallet into local file. JSON schema is following.
+// e.g. {"outpoint":"b78fb014ff8d7bbee82a393a371f852380e6007e838b1c62dc5d9c12491d08a4:1","txout":{"value":2000000000,"script_pubkey":"00143c45afd830fe843a91136a9f7df3064c2e0778b9"},"keychain":"External"}
+fn dump_utxos() {
+    let wallets = setup_client_wallets();
+
+    for (i, wallet) in wallets.iter().enumerate() {
+        wallet.sync(noop_progress(), None).unwrap();
+        println!("wallet {:?} has {:?}", wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
+        // TODO: select utxo to be used as Input
+        let local_utxo = &wallet.list_unspent().unwrap()[0];
+        let json = serde_json::to_vec(&local_utxo).unwrap();
+
+        fs::create_dir_all(UTXO_DIR).unwrap();
+        let mut file = File::create(format!("{}/{}.json", UTXO_DIR, i)).unwrap();
+        file.write_all(&json).unwrap();
+    }
+}
+
+fn dump_psbt_input() {
+    const UTXO_DIR: &str = "./data/client/utxos";
+    let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
+    for file_name in Path::new(UTXO_DIR).read_dir().expect("read_dir call failed") {
+        if let Ok(file_name) = file_name {
+            let file_path = file_name.path();
+            match fs::read_to_string(&file_path) {
+                Ok(string) => {
+                    println!("Read from {:?}", file_path);
+                    let utxo: bdk::LocalUtxo = serde_json::from_str(&string).unwrap();
+                    utxos.push(utxo)
+                },
+                Err(e) => {
+                    eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    let pubkey_wallets = setup_client_wallets();
+    for wallet in pubkey_wallets.iter() {
+        wallet.sync(noop_progress(), None).unwrap();
+        for i in 0..5 {
+            match wallet.get_psbt_input(utxos[i].clone(), None, false) {
+                Ok(input) => {
+                    println!("UTXO found: {:?}", &input);
+                    let psbt = serialize_hex(&input);
+                    fs::create_dir_all(PSBT_INPUT_DIR).unwrap();
+                    let mut file = File::create(format!("{}/{}.txt", PSBT_INPUT_DIR, i)).unwrap();
+                    file.write_all(psbt.as_bytes()).unwrap();
+                },
+                Err(err) => {
+                    println!("Error: {:?}", err)
+                },
+            }
+        }
+    }
+}
+
+#[get("/utxo")]
+async fn record_input() -> actix_web::Result<HttpResponse> {
+    dump_utxos();
+    Ok(HttpResponse::Ok().finish())
+}
+
+#[get("/psbt-input")]
+async fn record_psbt_input() -> actix_web::Result<HttpResponse> {
+    dump_psbt_input();
+    Ok(HttpResponse::Ok().finish())
+}
+
+#[get("/psbt")]
+async fn generate_psbt() -> actix_web::Result<HttpResponse> {
     let env_network = env::var(ENV_NETWORK).unwrap();
     let network = match env_network.as_str() {
         "testnet" => Network::Testnet,
@@ -116,7 +219,7 @@ fn main() {
                 }
             })
         }))
-        .map(|resp| resp.collect::<Result<Vec<Input>, io::Error>>())
+        .map(|resp| resp.collect::<std::result::Result<Vec<Input>, io::Error>>())
         .unwrap_or_else(|err| {
             eprintln!("Faild to read directory: {}",  err);
             std::process::exit(1);
@@ -161,6 +264,26 @@ fn main() {
     println!("{:?}", hex_psbt);
     let mut file = std::fs::File::create(PSBT_PATH).unwrap();
     file.write_all(hex_psbt.as_bytes()).unwrap();
+ 
+    Ok(HttpResponse::Ok().finish())
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    HttpServer::new(|| {
+        App::new().service(
+            web::scope("/api")
+                .service(
+                    web::scope("/v1")
+                    .service(record_input)
+                    .service(record_psbt_input)
+                    .service(generate_psbt)
+                )
+        )
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
 }
 
 fn merge_psbts(mut psbts: Vec<PSBT>) -> Vec<PSBT> {
@@ -222,7 +345,7 @@ fn into_rust_bitcoin_output(out_point: &OutPoint) -> bitcoin::blockdata::transac
     bitcoin::blockdata::transaction::OutPoint{ txid: out_point.txid, vout: out_point.vout }
 }
 
-fn generate_wallet(descriptor: &str, change_descriptor: &str, network: bitcoin::Network, electrum_endpoint: &str) -> Result<InnerWallet, Error> {
+fn generate_wallet(descriptor: &str, change_descriptor: &str, network: bitcoin::Network, electrum_endpoint: &str) -> std::result::Result<InnerWallet, Error> {
     let client = Client::new(electrum_endpoint).unwrap();
     Wallet::new(
         descriptor,
@@ -236,95 +359,6 @@ fn generate_wallet(descriptor: &str, change_descriptor: &str, network: bitcoin::
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    use std::fs::File;
-
-    fn setup_client_wallets() -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
-        let mut mnemonics:Vec<Mnemonic> = Vec::new();
-        for file_name in Path::new(MNEMONIC_DIR).read_dir().expect("read_dir call failed") {
-            if let Ok(file_name) = file_name {
-                let file_path = file_name.path();
-                match fs::read_to_string(&file_path) {
-                    Ok(string) => {
-                        println!("Read from {:?}", file_path);
-                        let mnemonic = Mnemonic::parse(&string).unwrap();
-                        mnemonics.push(mnemonic)
-                    },
-                    Err(e) => {
-                        eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
-                        std::process::exit(1);
-                    }
-                }
-            }
-        }
-
-        let mut clients:Vec<String> = Vec::new();
-        for mnemonic in mnemonics.iter() {
-            let xkey: ExtendedKey = mnemonic.clone().into_extended_key().unwrap();
-            let xprv = xkey.into_xprv(Network::Regtest).unwrap();
-            clients.push(xprv.to_string());
-        }
-        init_client_wallet(Network::Regtest, "127.0.0.1:50001", &clients)
-    }
-
-    #[test]
-    // dump_utxos dumps utxo data of each client wallet into local file. JSON schema is following.
-    // e.g. {"outpoint":"b78fb014ff8d7bbee82a393a371f852380e6007e838b1c62dc5d9c12491d08a4:1","txout":{"value":2000000000,"script_pubkey":"00143c45afd830fe843a91136a9f7df3064c2e0778b9"},"keychain":"External"}
-    fn dump_utxos() {
-        let wallets = setup_client_wallets();
-
-        for (i, wallet) in wallets.iter().enumerate() {
-            wallet.sync(noop_progress(), None).unwrap();
-            println!("wallet {:?} has {:?}", wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
-            // TODO: select utxo to be used as Input
-            let local_utxo = &wallet.list_unspent().unwrap()[0];
-            let json = serde_json::to_vec(&local_utxo).unwrap();
-
-            let mut file = File::create(format!("./data/client/utxos/{}.json", i)).unwrap();
-            file.write_all(&json).unwrap();
-        }
-    }
-
-    #[test]
-    fn dump_psbt_input() {
-        const UTXO_DIR: &str = "./data/client/utxos";
-        let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
-        for file_name in Path::new(UTXO_DIR).read_dir().expect("read_dir call failed") {
-            if let Ok(file_name) = file_name {
-                let file_path = file_name.path();
-                match fs::read_to_string(&file_path) {
-                    Ok(string) => {
-                        println!("Read from {:?}", file_path);
-                        let utxo: bdk::LocalUtxo = serde_json::from_str(&string).unwrap();
-                        utxos.push(utxo)
-                    },
-                    Err(e) => {
-                        eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
-                        std::process::exit(1);
-                    }
-                }
-            }
-        }
-
-        let pubkey_wallets = setup_client_wallets();
-        for wallet in pubkey_wallets.iter() {
-            wallet.sync(noop_progress(), None).unwrap();
-            for i in 0..5 {
-                match wallet.get_psbt_input(utxos[i].clone(), None, false) {
-                    Ok(input) => {
-                        println!("UTXO found: {:?}", &input);
-                        let psbt = serialize_hex(&input);
-                        fs::create_dir_all(PSBT_INPUT_DIR).unwrap();
-                        let mut file = File::create(format!("{}/{}.txt", PSBT_INPUT_DIR, i)).unwrap();
-                        file.write_all(psbt.as_bytes()).unwrap();
-                    },
-                    Err(err) => {
-                        println!("Error: {:?}", err)
-                    },
-                }
-            }
-        }
-    }
 
     #[test]
     fn sign_psbt() {

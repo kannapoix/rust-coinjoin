@@ -12,5 +12,6 @@ bitcoin = "0.25.0"
 base64 = "0.13.0"
 serde = "1.0.136"
 serde_json = "1.0.78"
+actix-web = "4.0.1"
 
 [dev-dependencies]

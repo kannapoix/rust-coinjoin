@@ -37,23 +37,27 @@ $ [electrs::daemon] waiting for 0 blocks to download (IBD)
 bitcoin-cli --regtest generatetodescriptor 1 "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/0)"
 ```
 
-# Run
+# Run API server
+```shell
+HOST="127.0.0.1:50001" NETWORK="regtest" cargo watch -x run
+```
+
 ## Prepare utxos and psbt input as client
 
 This will dump utxos to ./data/client/utxos
 ```shell
-cargo test dump_utxo -- --nocapture
+curl localhost:8080/api/v1/utxo
 ```
 
 This will dump hex psbt input to ./data/client/psbt_inputs
 ```shell
-cargo test dump_psbt_input -- --nocapture
+curl localhost:8080/api/v1/psbt-input
 ```
 
 ## Construct PSBT as server
 This will dump unsigned PSBT as ./data/psbt.txt
 ```shell
-HOST="127.0.0.1:50001" NETWORK="regtest" cargo run
+curl localhost:8080/api/v1/psbt
 ```
 
 For test net
