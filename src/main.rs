@@ -4,12 +4,13 @@ use std::path::Path;
 use std::io;
 use std::io::Write;
 use core::str::FromStr;
-use serde::Deserialize;
-use serde_json;
-use serde_json::Number;
 use std::fs::File;
 
-use actix_web::{get, web, App, HttpResponse, HttpServer};
+use serde::{Serialize, Deserialize};
+use serde_json;
+use serde_json::Number;
+use actix_web::{get, post, web, App, HttpResponse, HttpServer};
+use rand::Rng;
 
 use bdk::wallet::{Wallet, AddressIndex};
 use bdk::database::{MemoryDatabase};
@@ -144,8 +145,24 @@ fn dump_psbt_input() {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct CoinJoinInput {
+    outpoint: String,
+    psbt_input: String
+}
+
+#[post("/input")]
+async fn record_input(input: web::Json<CoinJoinInput>) -> actix_web::Result<HttpResponse> {
+    let temp_name: i16 = rand::thread_rng().gen_range(1000..10000);
+
+    fs::create_dir_all(UTXO_DIR).unwrap();
+    let mut file = File::create(format!("{}/{}.json", UTXO_DIR, temp_name)).unwrap();
+    file.write_all(serde_json::to_string(&input).unwrap().as_bytes()).unwrap();
+    Ok(HttpResponse::Ok().finish())
+}
+
 #[get("/utxo")]
-async fn record_input() -> actix_web::Result<HttpResponse> {
+async fn record_utxo() -> actix_web::Result<HttpResponse> {
     dump_utxos();
     Ok(HttpResponse::Ok().finish())
 }
@@ -276,6 +293,7 @@ async fn main() -> std::io::Result<()> {
                 .service(
                     web::scope("/v1")
                     .service(record_input)
+                    .service(record_utxo)
                     .service(record_psbt_input)
                     .service(generate_psbt)
                 )
