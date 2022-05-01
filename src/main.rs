@@ -38,6 +38,7 @@ const PSBT_INPUT_DIR: &str = "./data/client/psbt_inputs";
 const UTXO_DIR: &str = "./data/client/utxos";
 const INPUT_DIR: &str = "./data/client/inputs";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
+const SERVER_INPUT_DIR: &str = "./data/client/server_inputs";
 const PSBT_PATH: &str = "./data/psbt.txt";
 
 
@@ -154,6 +155,8 @@ struct CoinJoinInput {
 
 #[post("/input")]
 async fn record_input(input: web::Json<CoinJoinInput>) -> actix_web::Result<HttpResponse> {
+    // TODO: First read from file instead of payload
+
     // NOTE: Maybe there are better numbering method
     let temp_name: i16 = rand::thread_rng().gen_range(1000..10000);
     fs::create_dir_all(INPUT_DIR).unwrap();
@@ -398,5 +401,43 @@ mod tests {
             },
             None => println!("Can not get first item.")
         };
+    }
+
+    #[derive(Serialize)]
+    struct InputForServer {
+        outpoint: String,
+        psbt: String
+    }
+
+    #[test]
+    fn dump_outpoint_and_psbt_input() {
+        let wallets = setup_client_wallets();
+
+        for (i, wallet) in wallets.iter().enumerate() {
+            wallet.sync(noop_progress(), None).unwrap();
+            println!("wallet {:?} has {:?}", wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
+            // TODO: select utxo to be used as Input
+            let local_utxo = &wallet.list_unspent().unwrap()[0];
+
+            match wallet.get_psbt_input(local_utxo.clone(), None, false) {
+                Ok(input) => {
+                    println!("UTXO found: {:?}", &input);
+                    let psbt_input = serialize_hex(&input);
+
+                    let server_payload = InputForServer {
+                        outpoint: local_utxo.outpoint.to_string(),
+                        psbt: psbt_input
+                    };
+                    let payload = serde_json::to_string(&server_payload).unwrap();
+
+                    fs::create_dir_all(SERVER_INPUT_DIR).unwrap();
+                    let mut file = File::create(format!("{}/{}.json", SERVER_INPUT_DIR, i)).unwrap();
+                    file.write_all(payload.as_bytes()).unwrap();
+                },
+                Err(err) => {
+                    println!("Error: {:?}", err)
+                },
+            }
+        }
     }
 }
