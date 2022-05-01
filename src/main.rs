@@ -36,6 +36,7 @@ const ENV_NETWORK: &str = "NETWORK";
 const MNEMONIC_DIR: &str = "./data/client/mnemonic";
 const PSBT_INPUT_DIR: &str = "./data/client/psbt_inputs";
 const UTXO_DIR: &str = "./data/client/utxos";
+const INPUT_DIR: &str = "./data/client/inputs";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
 const PSBT_PATH: &str = "./data/psbt.txt";
 
@@ -153,20 +154,24 @@ struct CoinJoinInput {
 
 #[post("/input")]
 async fn record_input(input: web::Json<CoinJoinInput>) -> actix_web::Result<HttpResponse> {
+    // NOTE: Maybe there are better numbering method
     let temp_name: i16 = rand::thread_rng().gen_range(1000..10000);
+    fs::create_dir_all(INPUT_DIR).unwrap();
+    let mut file = File::create(format!("{}/{}.json", INPUT_DIR, temp_name)).unwrap();
 
-    fs::create_dir_all(UTXO_DIR).unwrap();
-    let mut file = File::create(format!("{}/{}.json", UTXO_DIR, temp_name)).unwrap();
-    file.write_all(serde_json::to_string(&input).unwrap().as_bytes()).unwrap();
+    let input_bytes = serde_json::to_string(&input).unwrap().into_bytes();
+    file.write_all(&input_bytes).unwrap();
     Ok(HttpResponse::Ok().finish())
 }
 
+// NOTE: /utxo endpoint will be replace by /input endpoint
 #[get("/utxo")]
 async fn record_utxo() -> actix_web::Result<HttpResponse> {
     dump_utxos();
     Ok(HttpResponse::Ok().finish())
 }
 
+// NOTE: /psbt-input endpoint will be replace by /input endpoint
 #[get("/psbt-input")]
 async fn record_psbt_input() -> actix_web::Result<HttpResponse> {
     dump_psbt_input();

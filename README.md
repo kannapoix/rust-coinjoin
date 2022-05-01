@@ -1,26 +1,38 @@
-# How to create coinjoin transaction
-This code generate coinjoin transaction whici has two inputs and two outputs.  
-First, we create two trasactions. The one contain input which Alice has priv key and the other tx contain input which Bob has it.    
-Then coinjoiner combine two trasnactions into one coinjoined trasaction.  
-Lastly, each Alice and Bob sign the trasaction by their own prive key.  
+# Overview
+Implementing CoinJoin server and client process.
+Try to generate CoinJoin transaction which has five inputs and five outputs.  
 
 # Initial setup
 
-```rust
-// Start regtest bitcoind and electrs
-// To stop bitcoind, run "make stop-bitcoind"
+Start regtest bitcoind and electrs
+To stop bitcoind, run `make stop-bitcoind`
+```shell
 make run-servers
+```
 
-// Fund alice wallet
+Fund alice wallet
+```shell
 bitcoin-cli --regtest createwallet "alice" false false "" false true
-// or  bitcoin-cli --regtest loadwallet "alice"
+```
+or
+```shell
+bitcoin-cli --regtest loadwallet "alice"
+```
+
+```shell
 bitcoin-cli --regtest importdescriptors '[{ "desc": "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/*)#88ru8wxx", "timestamp":0 }]'
-// To get checksum of descriptor
+```
+To get checksum of descriptor
+```shell
 bitcoin-cli --regtest getdescriptorinfo "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/*)"
+```
 
+```shell
 bitcoin-cli --regtest generatetodescriptor 120 "wpkh(tprv8ZgxMBicQKsPcwmRJonpDgQecfz4yQ29EzGoJE8gdo22yhWZHJVdWcatkKTy28CqGxnfuyZmaVeehVb52RPJVc1qrs8dVR6uQvcZwWdcX5w/84h/1h/0h/0/0)"
+```
 
-// Send to the others wallets from Alice
+Send to the others wallets from Alice
+```shell
 bitcoin-cli --regtest sendtoaddress bcrt1qwj7d4n048pj7xerwfnl2qmmnlk9ggjs7v0fqs7 20
 bitcoin-cli --regtest sendtoaddress bcrt1qzwjn0h2zuw3r5ju9v44vn4fhdxmpg59sr5eydq 20
 bitcoin-cli --regtest sendtoaddress bcrt1q83z6lkpsl6zr4ygnd20hmucxfshqw79e33jljw 20
@@ -69,4 +81,25 @@ HOST="ssl://electrum.blockstream.info:60002" NETWORK="testnet" cargo run
 ## Sign PSBT as client
 ```shell
 cargo test sign_psbt -- --nocapture
+```
+
+# Client wallet by bdk-cli
+```shell
+bdk-cli wallet -s 127.0.0.1:50001 --descriptor "wpkh(tprv8ZgxMBicQKsPd5qWpCSXVYmARoGqNAKi8iGjdJdAWkLM33WDmEB264qK81i8f9G1WiSHcK4QRyNrFxjDMB5VqNK2z1JvkpaQxuZvN2X7tot/84'/1'/0'/0/*)" --change_descriptor "wpkh(tprv8ZgxMBicQKsPeaTaHASFZrywrLFR2hreAv8yjoc1GkcgM6MKJ3pZDDN3Kdsqtz9xaZj4asJiyhH7ATuW7FzrCg1amJcEcmU2VdYCk4eMjYC/84'/1'/0'/1/*)" --wallet bob sync
+```
+
+```shell
+bdk-cli wallet -s 127.0.0.1:50001 --descriptor "wpkh(tprv8ZgxMBicQKsPdu9c5ujos5QUdGzUu3TkXWhTjTYiJ2SGEscdPALwZPXPn7fypuMi6eiD42YDV1qRTEdiV5DNaYLhHEijUn4Y7dAiJAHYCn3/84'/1'/0'/0/*)" --change_descriptor "wpkh(tprv8ZgxMBicQKsPdu9c5ujos5QUdGzUu3TkXWhTjTYiJ2SGEscdPALwZPXPn7fypuMi6eiD42YDV1qRTEdiV5DNaYLhHEijUn4Y7dAiJAHYCn3/84'/1'/0'/1/*)" --wallet carol sync
+```
+
+```shell
+bdk-cli wallet -s 127.0.0.1:50001 --descriptor "wpkh(tprv8ZgxMBicQKsPeA6GrkH85xhTDfDz8oBbjqSnXJCXiohMEr1sxNmc7VwtiAWyrT9rNxWnNveaZ2MKJ9nAC1htJPvKkDZs7w8p6jHEtZWMk3J/84'/1'/0'/0/*)" --change_descriptor "wpkh(tprv8ZgxMBicQKsPeA6GrkH85xhTDfDz8oBbjqSnXJCXiohMEr1sxNmc7VwtiAWyrT9rNxWnNveaZ2MKJ9nAC1htJPvKkDZs7w8p6jHEtZWMk3J/84'/1'/0'/1/*)" --wallet dave sync
+```
+
+```shell
+bdk-cli wallet -s 127.0.0.1:50001 --descriptor "wpkh(tprv8ZgxMBicQKsPeaTaHASFZrywrLFR2hreAv8yjoc1GkcgM6MKJ3pZDDN3Kdsqtz9xaZj4asJiyhH7ATuW7FzrCg1amJcEcmU2VdYCk4eMjYC/84'/1'/0'/0/*)" --change_descriptor "wpkh(tprv8ZgxMBicQKsPeaTaHASFZrywrLFR2hreAv8yjoc1GkcgM6MKJ3pZDDN3Kdsqtz9xaZj4asJiyhH7ATuW7FzrCg1amJcEcmU2VdYCk4eMjYC/84'/1'/0'/1/*)" --wallet eve sync
+```
+
+```shell
+bdk-cli wallet -s 127.0.0.1:50001 --descriptor "wpkh(tprv8ZgxMBicQKsPeSeYKZhm4A2JDKunauLBtRP9HiDUb7frW8RNkzofRSESaLnkXL4m5ihADerbgFmLyWWJvzwU28HALbYEFqRrsNbpHFUaAoa/84'/1'/0'/0/*)" --change_descriptor "wpkh(tprv8ZgxMBicQKsPeSeYKZhm4A2JDKunauLBtRP9HiDUb7frW8RNkzofRSESaLnkXL4m5ihADerbgFmLyWWJvzwU28HALbYEFqRrsNbpHFUaAoa/84'/1'/0'/1/*)" --wallet frank sync
 ```
