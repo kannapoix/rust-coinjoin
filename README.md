@@ -56,14 +56,10 @@ HOST="127.0.0.1:50001" NETWORK="regtest" cargo watch -x run
 
 ## Prepare utxos and psbt input as client
 
-This will dump utxos to ./data/client/utxos
+This will dump utxos to ./data/client/server_inputs.  
+Finally, these data will be created via API call which client register input to server.
 ```shell
-curl localhost:8080/api/v1/utxo
-```
-
-This will dump hex psbt input to ./data/client/psbt_inputs
-```shell
-curl localhost:8080/api/v1/psbt-input
+cargo test dump_outpoint_and_psbt_input -- --nocapture
 ```
 
 ## Construct PSBT as server

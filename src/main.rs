@@ -34,32 +34,11 @@ const ENV_HOST: &str = "HOST";
 const ENV_NETWORK: &str = "NETWORK";
 
 const MNEMONIC_DIR: &str = "./data/client/mnemonic";
-const PSBT_INPUT_DIR: &str = "./data/client/psbt_inputs";
-const UTXO_DIR: &str = "./data/client/utxos";
 const INPUT_DIR: &str = "./data/client/inputs";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
 const SERVER_INPUT_DIR: &str = "./data/client/server_inputs";
 const PSBT_PATH: &str = "./data/psbt.txt";
 
-
-// UTXO
-#[derive(Debug, Deserialize)]
-struct OutputSet {
-    outpoint: OutPoint,
-    input: bitcoin::util::psbt::Input,
-}
-#[derive(Debug, Deserialize)]
-struct Utxo {
-    outpoint: String,
-    txout: Txout,
-    keychain: String
-}
-
-#[derive(Debug, Deserialize)]
-struct Txout {
-    value: Number,
-    script_pubkey: String
-}
 
 fn setup_client_wallets() -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
     let mut mnemonics:Vec<Mnemonic> = Vec::new();
@@ -89,64 +68,6 @@ fn setup_client_wallets() -> Vec<Wallet<ElectrumBlockchain, MemoryDatabase>> {
     init_client_wallet(Network::Regtest, "127.0.0.1:50001", &clients)
 }
 
-// dump_utxos dumps utxo data of each client wallet into local file. JSON schema is following.
-// e.g. {"outpoint":"b78fb014ff8d7bbee82a393a371f852380e6007e838b1c62dc5d9c12491d08a4:1","txout":{"value":2000000000,"script_pubkey":"00143c45afd830fe843a91136a9f7df3064c2e0778b9"},"keychain":"External"}
-fn dump_utxos() {
-    let wallets = setup_client_wallets();
-
-    for (i, wallet) in wallets.iter().enumerate() {
-        wallet.sync(noop_progress(), None).unwrap();
-        println!("wallet {:?} has {:?}", wallet.get_address(AddressIndex::Peek(0)).unwrap(), wallet.get_balance().unwrap());
-        // TODO: select utxo to be used as Input
-        let local_utxo = &wallet.list_unspent().unwrap()[0];
-        let json = serde_json::to_vec(&local_utxo).unwrap();
-
-        fs::create_dir_all(UTXO_DIR).unwrap();
-        let mut file = File::create(format!("{}/{}.json", UTXO_DIR, i)).unwrap();
-        file.write_all(&json).unwrap();
-    }
-}
-
-fn dump_psbt_input() {
-    const UTXO_DIR: &str = "./data/client/utxos";
-    let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
-    for file_name in Path::new(UTXO_DIR).read_dir().expect("read_dir call failed") {
-        if let Ok(file_name) = file_name {
-            let file_path = file_name.path();
-            match fs::read_to_string(&file_path) {
-                Ok(string) => {
-                    println!("Read from {:?}", file_path);
-                    let utxo: bdk::LocalUtxo = serde_json::from_str(&string).unwrap();
-                    utxos.push(utxo)
-                },
-                Err(e) => {
-                    eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
-                    std::process::exit(1);
-                }
-            }
-        }
-    }
-
-    let pubkey_wallets = setup_client_wallets();
-    for wallet in pubkey_wallets.iter() {
-        wallet.sync(noop_progress(), None).unwrap();
-        for i in 0..5 {
-            match wallet.get_psbt_input(utxos[i].clone(), None, false) {
-                Ok(input) => {
-                    println!("UTXO found: {:?}", &input);
-                    let psbt = serialize_hex(&input);
-                    fs::create_dir_all(PSBT_INPUT_DIR).unwrap();
-                    let mut file = File::create(format!("{}/{}.txt", PSBT_INPUT_DIR, i)).unwrap();
-                    file.write_all(psbt.as_bytes()).unwrap();
-                },
-                Err(err) => {
-                    println!("Error: {:?}", err)
-                },
-            }
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug)]
 struct CoinJoinInput {
     outpoint: String,
@@ -164,20 +85,6 @@ async fn record_input(input: web::Json<CoinJoinInput>) -> actix_web::Result<Http
 
     let input_bytes = serde_json::to_string(&input).unwrap().into_bytes();
     file.write_all(&input_bytes).unwrap();
-    Ok(HttpResponse::Ok().finish())
-}
-
-// NOTE: /utxo endpoint will be replace by /input endpoint
-#[get("/utxo")]
-async fn record_utxo() -> actix_web::Result<HttpResponse> {
-    dump_utxos();
-    Ok(HttpResponse::Ok().finish())
-}
-
-// NOTE: /psbt-input endpoint will be replace by /input endpoint
-#[get("/psbt-input")]
-async fn record_psbt_input() -> actix_web::Result<HttpResponse> {
-    dump_psbt_input();
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -208,34 +115,14 @@ async fn generate_psbt() -> actix_web::Result<HttpResponse> {
     mixer.sync(noop_progress(), None).unwrap();
     println!("Mixer {:?} has {:?}", mixer.get_address(AddressIndex::Peek(0)).unwrap(), mixer.get_balance().unwrap());
 
-    // TODO: Finally get utxo from client
-    const JSON_DIR: &str = "./data/client/utxos";
-    let mut utxos: Vec<bdk::LocalUtxo> = Vec::new();
-    for file_name in Path::new(JSON_DIR).read_dir().expect("read_dir call failed") {
-        if let Ok(file_name) = file_name {
-            let file_path = file_name.path();
-            match fs::read_to_string(&file_path) {
-                Ok(string) => {
-                    println!("Read from {:?}", file_path);
-                    let utxo: bdk::LocalUtxo = serde_json::from_str(&string).unwrap();
-                    utxos.push(utxo)
-                },
-                Err(e) => {
-                    eprintln!("Faild to read file {}: {}", &file_path.to_str().unwrap_or("unknown file"), e);
-                    std::process::exit(1);
-                }
-            }
-        }
-    }
-
-    let psbt_inputs = Path::new(PSBT_INPUT_DIR)
+    let psbt_inputs = Path::new(SERVER_INPUT_DIR)
         .read_dir()
         .map(|res| res.map(|e| {
             e.and_then(|e| {
                 match fs::read_to_string(&e.path()) {
                     Ok(data) => {
-                        let psbt_input_string: Vec<u8> = FromHex::from_hex(&data).unwrap();
-                        Ok(deserialize::<Input>(&psbt_input_string).unwrap())
+                        let coinjoin_input: CoinJoinInput = serde_json::from_str(&data).unwrap();
+                        Ok(coinjoin_input)
                     },
                     Err(e) => {
                         eprintln!("Faild to read file: {}",  e);
@@ -244,7 +131,7 @@ async fn generate_psbt() -> actix_web::Result<HttpResponse> {
                 }
             })
         }))
-        .map(|resp| resp.collect::<std::result::Result<Vec<Input>, io::Error>>())
+        .map(|resp| resp.collect::<std::result::Result<Vec<CoinJoinInput>, io::Error>>())
         .unwrap_or_else(|err| {
             eprintln!("Faild to read directory: {}",  err);
             std::process::exit(1);
@@ -253,17 +140,6 @@ async fn generate_psbt() -> actix_web::Result<HttpResponse> {
             eprintln!("Faild to read file: {}",  err);
             std::process::exit(1);
         });
-
-    let output_sets: Vec<OutputSet> = utxos
-        .iter()
-        .map(|utxo| {
-            let input = psbt_inputs
-                .iter()
-                .find(|input| input.non_witness_utxo.as_ref().unwrap().txid() == utxo.outpoint.txid ).unwrap();
-
-            OutputSet{ outpoint: utxo.outpoint, input: input.clone()}
-        })
-        .collect::<Vec<OutputSet>>();
 
     let (psbt, _) = {
         let mut builder = mixer.build_tx();
@@ -275,12 +151,12 @@ async fn generate_psbt() -> actix_web::Result<HttpResponse> {
             builder.add_recipient(mixer.get_address(AddressIndex::New).unwrap().script_pubkey(), 5_000);
         }
 
-        for output_set in &output_sets {
+        for psbt_input in &psbt_inputs {
             // Register outpoint and psbt input
             // outpoint is pointing utxo which used in coinjoin tx
             // psbt_input is input of coinjoin tx which we are going to create
-            // builder.add_foreign_utxo(into_rust_bitcoin_output(&psbt_input.outpoint), psbt_input.input.clone(), 32).unwrap();// check about weight
-            builder.add_foreign_utxo(into_rust_bitcoin_output(&output_set.outpoint), output_set.input.clone(), 32).unwrap();// check about weight
+            let psbt_input_string: Vec<u8> = FromHex::from_hex(&psbt_input.psbt_input).unwrap();
+            builder.add_foreign_utxo(into_rust_bitcoin_output(&OutPoint::from_str(&psbt_input.outpoint).unwrap()), deserialize::<Input>(&psbt_input_string).unwrap(), 32).unwrap();// check about weight
         }
         builder.finish().unwrap()
     };
@@ -301,8 +177,6 @@ async fn main() -> std::io::Result<()> {
                 .service(
                     web::scope("/v1")
                     .service(record_input)
-                    .service(record_utxo)
-                    .service(record_psbt_input)
                     .service(generate_psbt)
                 )
         )
@@ -403,12 +277,6 @@ mod tests {
         };
     }
 
-    #[derive(Serialize)]
-    struct InputForServer {
-        outpoint: String,
-        psbt: String
-    }
-
     #[test]
     fn dump_outpoint_and_psbt_input() {
         let wallets = setup_client_wallets();
@@ -424,9 +292,9 @@ mod tests {
                     println!("UTXO found: {:?}", &input);
                     let psbt_input = serialize_hex(&input);
 
-                    let server_payload = InputForServer {
+                    let server_payload = CoinJoinInput {
                         outpoint: local_utxo.outpoint.to_string(),
-                        psbt: psbt_input
+                        psbt_input: psbt_input
                     };
                     let payload = serde_json::to_string(&server_payload).unwrap();
 
