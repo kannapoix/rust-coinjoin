@@ -19,7 +19,7 @@ use bdk::electrum_client::Client;
 use bdk::Error;
 use bdk::bitcoin;
 use bdk::bitcoin::hashes::hex::FromHex;
-use bdk::bitcoin::util::{bip32, psbt::Input};
+use bdk::bitcoin::util::{bip32, psbt::Input, address::Address};
 use bdk::bitcoin::Network;
 use bdk::bitcoin::OutPoint;
 use bdk::bitcoin::consensus::encode::{serialize, serialize_hex, deserialize};
@@ -37,6 +37,7 @@ const MNEMONIC_DIR: &str = "./data/client/mnemonic";
 const INPUT_DIR: &str = "./data/client/inputs";
 const MIXER_MNEMONIC_PATH: &str = "./data/mixer/mnemonic/alice.mnemonic";
 const SERVER_INPUT_DIR: &str = "./data/client/server_inputs";
+const OUTPUT_DIR: &str = "./data/client/outputs";
 const PSBT_PATH: &str = "./data/psbt.txt";
 
 
@@ -306,6 +307,20 @@ mod tests {
                     println!("Error: {:?}", err)
                 },
             }
+        }
+    }
+
+    #[test]
+    fn dump_output() {
+        let wallets = setup_client_wallets();
+
+        for (i, wallet) in wallets.iter().enumerate() {
+            wallet.sync(noop_progress(), None).unwrap();
+
+            let new_address =wallet.get_address(AddressIndex::Peek(0)).unwrap();
+            fs::create_dir_all(OUTPUT_DIR).unwrap();
+            let mut file = File::create(format!("{}/{}.txt", OUTPUT_DIR, i)).unwrap();
+            file.write_all(new_address.address.to_string().as_bytes()).unwrap();
         }
     }
 }
