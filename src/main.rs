@@ -8,7 +8,6 @@ use std::fs::File;
 
 use serde::{Serialize, Deserialize};
 use serde_json;
-use serde_json::Number;
 use actix_web::{get, post, web, App, HttpResponse, HttpServer};
 use rand::Rng;
 
@@ -142,14 +141,35 @@ async fn generate_psbt() -> actix_web::Result<HttpResponse> {
             std::process::exit(1);
         });
 
+    let output_addresses = Path::new(OUTPUT_DIR)
+        .read_dir()
+        .and_then(|dir| { 
+            dir
+                .filter_map(|result| {
+                    result.ok()
+                })
+                .map(|e| {
+                    match fs::read_to_string(&e.path()) {
+                        Ok(data) => {
+                            Ok(Address::from_str(&data).unwrap())
+                        },
+                        Err(e) => {
+                            eprintln!("Faild to read file: {}",  e);
+                            std::process::exit(1);
+                        }
+                    }
+                })
+                .collect::<io::Result<Vec<Address>>>()
+        }).unwrap();
+
     let (psbt, _) = {
         let mut builder = mixer.build_tx();
         builder
             .fee_rate(bdk::FeeRate::from_sat_per_vb(10.0))
             .do_not_spend_change();
 
-        for _ in 0..5 {
-            builder.add_recipient(mixer.get_address(AddressIndex::New).unwrap().script_pubkey(), 5_000);
+        for output_addres in output_addresses {
+            builder.add_recipient(output_addres.script_pubkey(), 100_000_000);
         }
 
         for psbt_input in &psbt_inputs {
