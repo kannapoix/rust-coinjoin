@@ -150,8 +150,26 @@ mod tests {
                 wallet.get_address(AddressIndex::Peek(0)).unwrap(),
                 wallet.get_balance().unwrap()
             );
-            // TODO: select utxo to be used as Input
-            let local_utxo = &wallet.list_unspent().unwrap()[0];
+
+            let local_utxo_result = wallet
+                .list_unspent()
+                .and_then(|v| Ok(v.into_iter().find(|utxo| utxo.txout.value > 1000000)));
+
+            let local_utxo_option = match local_utxo_result {
+                Ok(local_utxo) => local_utxo,
+                Err(e) => {
+                    eprintln!("Error: {:?}", e);
+                    continue;
+                }
+            };
+
+            let local_utxo = match local_utxo_option {
+                Some(local_utxo) => local_utxo,
+                None => {
+                    eprintln!("Error: UTXO with sufficient funds is not found");
+                    continue;
+                }
+            };
 
             match wallet.get_psbt_input(local_utxo.clone(), None, false) {
                 Ok(input) => {
