@@ -140,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn dump_outpoint_and_psbt_input() {
+    fn register_outpoint_and_psbt_input() -> Result<(), reqwest::Error> {
         let wallets = setup_client_wallets();
 
         for (i, wallet) in wallets.iter().enumerate() {
@@ -180,18 +180,19 @@ mod tests {
                         outpoint: local_utxo.outpoint.to_string(),
                         psbt_input: psbt_input,
                     };
-                    let payload = serde_json::to_string(&server_payload).unwrap();
 
-                    fs::create_dir_all(SERVER_INPUT_DIR).unwrap();
-                    let mut file =
-                        File::create(format!("{}/{}.json", SERVER_INPUT_DIR, i)).unwrap();
-                    file.write_all(payload.as_bytes()).unwrap();
+                    let client = reqwest::blocking::Client::new();
+                    let res = client
+                        .post("http://127.0.0.1:8080/api/v1/input")
+                        .json(&server_payload)
+                        .send()?;
                 }
                 Err(err) => {
                     println!("Error: {:?}", err)
                 }
             }
         }
+        Ok(())
     }
 
     #[test]

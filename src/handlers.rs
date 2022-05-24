@@ -40,8 +40,6 @@ struct CoinJoinInput {
 
 #[post("/input")]
 async fn record_input(input: web::Json<CoinJoinInput>) -> actix_web::Result<HttpResponse> {
-    // TODO: First read from file instead of payload
-
     // NOTE: Maybe there are better numbering method
     let temp_name: i16 = rand::thread_rng().gen_range(1000..10000);
     fs::create_dir_all(INPUT_DIR).unwrap();
